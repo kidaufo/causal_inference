@@ -1,0 +1,119 @@
+---
+title: "causal effect estimation"
+author: "Yahoo"
+date: "2019/8/15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+$Y_0$: ある人が$Z=0$という条件を受けた場合の結果変数
+$Y_1$: ある人が$Z=1$という条件を受けた場合の結果変数
+
+例えば、CMを見た場合のゲーム利用時間が$Y_1$、見なかった場合の利用時間が$Y_0$。
+
+1. Average Treatment Effect (ATE, 平均処置効果)
+$$ATE = E(Y_1 - Y_0) = E(Y_1) -E(Y_0)$$
+2. Average Treatment Effect on the Treated (ATT, 処置群における平均処置効果)
+$$ATT = E(Y_1 - Y_0|Z=1)$$
+
+3. Average Treatment Effect on the Untreated (ATU, 対照群における平均処置効果)
+
+$$ATU = E(Y_1 - Y_0|Z=0)$$
+
+Randomized Controlled Trialの場合は、Zはランダムに割り振られているため、処置群と対照群の平均使用時間の単純な差$E(Y_1|Z=1) - E(Y_0|Z=0)=E(Y_1) -E(Y_0)$となり、ATEそのものとなる。
+Zがランダムでない場合のATEの推定方法を考える。
+
+```{r cars}
+library(tidyverse)
+library(gridExtra)
+library(pROC)
+
+CI_data = read.csv("kato&hoshino/q_data_x.csv", header = T)
+```
+
+```{r}
+CI_stats <- CI_data %>%
+  group_by(cm_dummy) %>% 
+  summarise_at(vars(gamedummy, gamesecond, gamecount, TVwatch_day, age), mean)
+
+CI_data %>% 
+  group_by(cm_dummy, gamedummy) %>% 
+  summarise(n())
+
+g1 <- CI_stats %>%
+  ggplot(aes(x=cm_dummy, y=gamedummy)) +
+  geom_bar(stat = "identity")
+
+g2 <- CI_stats %>%
+  ggplot(aes(x=cm_dummy, y=gamesecond)) +
+  geom_bar(stat = "identity")
+
+g3 <- CI_stats %>%
+  ggplot(aes(x=cm_dummy, y=gamecount)) +
+  geom_bar(stat = "identity")
+
+grid.arrange(g1, g2, g3, nrow=1)
+```
+
+CM非接触群の方がゲーム使用時間、回数ともに長いという結果になっている。これは、CM接触群はテレビの視聴時間が長く、スマホゲームの利用が少ない高齢者を多く含んでいる、といったセレクションバイアスの影響と考えられる。
+
+ここでｍstrong ignorability、すなわち「介入群・対照群の割り付けと潜在的結果変数とが共変量を条件付けると独立である」を仮定すると、共変量の分布を介入群・対照群で揃えててあげればATEが推定できる。
+
+具体的な方法としては、
+1. 回帰モデルの利用
+2. マッチング・層別解析
+3. 傾向スコア
+
+などがあるが、ATEの推定には傾向スコアが用いられることが多い。
+
+傾向スコア（Propensity score)
+サンプルiが処置群に存在する確率を表す、1次元の変数。strong ignorabilityの仮定のもとでは、傾向スコアの調整を行えば多次元の共変量すべてについて調整を行ったのと同じことになる。
+
+$$e(x_i)=Pr(Z_i=1|X_i=x_i)$$
+
+(i)傾向スコアの推定、(ii)傾向スコアを用いた因果効果の推定の２段階で解析を行う。
+
+### 傾向スコアの推定
+通常はロジスティック回帰分析、プロビット回帰分析などが用いられる。
+
+
+```{r ps}
+# ロジスティック回帰による傾向スコアの算出
+model <- glm(cm_dummy ~ TVwatch_day + age + sex + marry_dummy + 
+           child_dummy + inc + pmoney + area_kanto +area_tokai + 
+           area_keihanshin + job_dummy1 + job_dummy2 + job_dummy3 + 
+           job_dummy4 + job_dummy5 + job_dummy6 + job_dummy7  + 
+           fam_str_dummy1 + fam_str_dummy2 + fam_str_dummy3 + fam_str_dummy4, 
+         family=binomial(link="logit") , 
+         data = CI_data)
+
+CI_data <- CI_data %>% mutate(ps=model$fitted.value)
+
+# C-statistic(AUC)の算出
+ROC <- roc(CI_data$cm_dummy, CI_data$ps)
+print(auc(ROC))
+```
+
+```{r}
+# 割り当て変数zの定義
+ivec1 = CI_data$cm_dummy #処置群（CMを見た群）を示すベクトル
+ivec0 = rep(1, nrow(CI_data))-ivec1　#対照群（CMを見ていない群）を示すベクトル
+
+### 平均処置効果(表4) ###
+#######################
+ivec = cbind(ivec1,ivec0)
+iestp1 = (ivec1/logi$fitted)
+iestp0 = (ivec0/(1-logi$fitted))
+iestp = iestp1+iestp0
+
+ipwe_gd = lm(CI_data$gamedummy ~ ivec+0, weights=iestp)
+summary(ipwe_gd)
+ipwe_gc = lm(CI_data$gamecount ~ ivec+0, weights=iestp)
+summary(ipwe_gc)
+ipwe_gs = lm(CI_data$gamesecond ~ ivec+0, weights=iestp)
+summary(ipwe_gs)
+```
+
